@@ -1,0 +1,36 @@
+ninja_required_version = 1.3
+cxx = c++
+nvcc = /appl/scibuilder-spack/aalto-rhel9/prod/2025.1/gcc/env/software/linux-rhel9-haswell/gcc-13.3.0/cuda-12.6.2-adwjvuz/bin/nvcc
+
+cflags = -Wsign-compare -DNDEBUG -g -fwrapv -O3 -Wall -Wstrict-prototypes -fPIC -I/scratch/work/hsut2/.conda_envs/gaussian_grouping/lib/python3.8/site-packages/torch/include -I/scratch/work/hsut2/.conda_envs/gaussian_grouping/lib/python3.8/site-packages/torch/include/torch/csrc/api/include -I/scratch/work/hsut2/.conda_envs/gaussian_grouping/lib/python3.8/site-packages/torch/include/TH -I/scratch/work/hsut2/.conda_envs/gaussian_grouping/lib/python3.8/site-packages/torch/include/THC -I/appl/scibuilder-spack/aalto-rhel9/prod/2025.1/gcc/env/software/linux-rhel9-haswell/gcc-13.3.0/cuda-12.6.2-adwjvuz/include -I/scratch/work/hsut2/.conda_envs/gaussian_grouping/include/python3.8 -c
+post_cflags = -DTORCH_API_INCLUDE_EXTENSION_H '-DPYBIND11_COMPILER_TYPE="_gcc"' '-DPYBIND11_STDLIB="_libstdcpp"' '-DPYBIND11_BUILD_ABI="_cxxabi1011"' -DTORCH_EXTENSION_NAME=_C -D_GLIBCXX_USE_CXX11_ABI=0 -std=c++17
+cuda_cflags = -I/scratch/work/hsut2/.conda_envs/gaussian_grouping/lib/python3.8/site-packages/torch/include -I/scratch/work/hsut2/.conda_envs/gaussian_grouping/lib/python3.8/site-packages/torch/include/torch/csrc/api/include -I/scratch/work/hsut2/.conda_envs/gaussian_grouping/lib/python3.8/site-packages/torch/include/TH -I/scratch/work/hsut2/.conda_envs/gaussian_grouping/lib/python3.8/site-packages/torch/include/THC -I/appl/scibuilder-spack/aalto-rhel9/prod/2025.1/gcc/env/software/linux-rhel9-haswell/gcc-13.3.0/cuda-12.6.2-adwjvuz/include -I/scratch/work/hsut2/.conda_envs/gaussian_grouping/include/python3.8 -c
+cuda_post_cflags = -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ --expt-relaxed-constexpr --compiler-options ''"'"'-fPIC'"'"'' -Xcompiler -fno-gnu-unique -I/scratch/work/hsut2/gaussian-grouping/submodules/diff_gaussian_rasterization_16/third_party/glm/ -DTORCH_API_INCLUDE_EXTENSION_H '-DPYBIND11_COMPILER_TYPE="_gcc"' '-DPYBIND11_STDLIB="_libstdcpp"' '-DPYBIND11_BUILD_ABI="_cxxabi1011"' -DTORCH_EXTENSION_NAME=_C -D_GLIBCXX_USE_CXX11_ABI=0 -gencode=arch=compute_70,code=sm_70 -gencode=arch=compute_80,code=sm_80 -gencode=arch=compute_90,code=sm_90 -ccbin /appl/scibuilder-spack/aalto-rhel9/prod/2025.1/gcc/compilers/view/bin/gcc -std=c++17
+cuda_dlink_post_cflags = 
+ldflags = 
+
+rule compile
+  command = $cxx -MMD -MF $out.d $cflags -c $in -o $out $post_cflags
+  depfile = $out.d
+  deps = gcc
+
+rule cuda_compile
+  depfile = $out.d
+  deps = gcc
+  command = $nvcc  $cuda_cflags -c $in -o $out $cuda_post_cflags
+
+
+
+
+
+build /scratch/work/hsut2/gaussian-grouping/submodules/diff_gaussian_rasterization_16/build/temp.linux-x86_64-cpython-38/cuda_rasterizer/backward.o: cuda_compile /scratch/work/hsut2/gaussian-grouping/submodules/diff_gaussian_rasterization_16/cuda_rasterizer/backward.cu
+build /scratch/work/hsut2/gaussian-grouping/submodules/diff_gaussian_rasterization_16/build/temp.linux-x86_64-cpython-38/cuda_rasterizer/forward.o: cuda_compile /scratch/work/hsut2/gaussian-grouping/submodules/diff_gaussian_rasterization_16/cuda_rasterizer/forward.cu
+build /scratch/work/hsut2/gaussian-grouping/submodules/diff_gaussian_rasterization_16/build/temp.linux-x86_64-cpython-38/cuda_rasterizer/rasterizer_impl.o: cuda_compile /scratch/work/hsut2/gaussian-grouping/submodules/diff_gaussian_rasterization_16/cuda_rasterizer/rasterizer_impl.cu
+build /scratch/work/hsut2/gaussian-grouping/submodules/diff_gaussian_rasterization_16/build/temp.linux-x86_64-cpython-38/ext.o: compile /scratch/work/hsut2/gaussian-grouping/submodules/diff_gaussian_rasterization_16/ext.cpp
+build /scratch/work/hsut2/gaussian-grouping/submodules/diff_gaussian_rasterization_16/build/temp.linux-x86_64-cpython-38/rasterize_points.o: cuda_compile /scratch/work/hsut2/gaussian-grouping/submodules/diff_gaussian_rasterization_16/rasterize_points.cu
+
+
+
+
+
+

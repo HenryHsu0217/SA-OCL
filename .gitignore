@@ -1,0 +1,15 @@
+# Checkpoint / model directories
+checkpoints/
+checkpoint/
+models/
+
+*.pt
+*.pth
+*.pth.tar
+*.ckpt
+
+*.safetensors
+*.bin
+
+*.png
+*.tar

@@ -1,0 +1,6 @@
+# ninja log v7
+4	8618	1770106346000000000	/scratch/work/hsut2/gaussian-grouping/submodules/diff_gaussian_rasterization_16/build/temp.linux-x86_64-cpython-38/cuda_rasterizer/forward.o	3e9d11493f578585
+3	11527	1770106346000000000	/scratch/work/hsut2/gaussian-grouping/submodules/diff_gaussian_rasterization_16/build/temp.linux-x86_64-cpython-38/cuda_rasterizer/backward.o	ae53edbc68542365
+5	27300	1770106346000000000	/scratch/work/hsut2/gaussian-grouping/submodules/diff_gaussian_rasterization_16/build/temp.linux-x86_64-cpython-38/cuda_rasterizer/rasterizer_impl.o	96cd370a9670217
+6	35476	1770106346000000000	/scratch/work/hsut2/gaussian-grouping/submodules/diff_gaussian_rasterization_16/build/temp.linux-x86_64-cpython-38/ext.o	559ccb7392d7e54e
+7	63176	1770106346000000000	/scratch/work/hsut2/gaussian-grouping/submodules/diff_gaussian_rasterization_16/build/temp.linux-x86_64-cpython-38/rasterize_points.o	940379fab412147c
