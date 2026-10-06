@@ -2,9 +2,9 @@
 
 Implementation of **Scene-Agnostic Object-Centric Representation Learning for 3D Gaussian Splatting**, by Tsuheng Hsu, Guiyu Liu, Juho Kannala, and Janne Heikkilä. Reference: [arXiv:2604.09045v1](https://arxiv.org/abs/2604.09045v1). The project combines a dataset-wide GOLD object codebook with per-scene 3D Gaussian optimization and object segmentation.
 
-This guide describes the **current code and launchers**. RGB images, ground-truth masks, some camera inputs, and trained GOLD checkpoints were removed from this workspace; restore those inputs before training. The retained DINO, DEVA, SAM, and SAM2 weights are foundation-model assets, not trained GOLD checkpoints.
+This guide covers environment installation, CUDA builds, dataset preparation, GOLD training, Gaussian training/rendering/evaluation, and result aggregation. Commands use paths relative to the project root; replace `/path/to/SA-OCL` with your checkout location.
 
-This is the project's only README. All retained source is under this project root, without symbolic links or duplicate GOLD directories. `original` identifies inherited Gaussian Grouping code, including pre-existing local changes; `paper` identifies our implementations and adaptations for the paper; `baselines` contains comparison implementations.
+`original` identifies inherited Gaussian Grouping code; `paper` contains our implementations and adaptations for the paper; `baselines` contains comparison implementations.
 
 ## Contents
 
@@ -20,28 +20,16 @@ This is the project's only README. All retained source is under this project roo
 - [Run one scene manually](#run-one-scene-manually)
 - [Outputs and metrics](#outputs-and-metrics)
 - [Baselines and other components](#baselines-and-other-components)
-- [Experiment settings and paper differences](#experiment-settings-and-paper-differences)
+- [Experiment configuration](#experiment-configuration)
 - [Troubleshooting](#troubleshooting)
-- [References and provenance](#references-and-provenance)
+- [References](#references)
 
 ## How the project works
 
 There are two training stages. **GOLD learns across scenes**, then its checkpoint is frozen while **each Gaussian scene is optimized separately**. The combined metric launchers perform the second stage, rendering, and evaluation; GOLD training happens beforehand.
 
-```mermaid
-flowchart LR
-    A[Dataset training images] --> B[Train GOLD with frozen DINO targets]
-    B --> C[Frozen GOLD and global object codebook]
-    D[One scene: images, cameras, initial points] --> E[Optimize RGB and 122-feature Gaussians]
-    C --> F[Per-view masks and selected object codes]
-    F --> E
-    E --> G[Render RGB and identity features]
-    C --> H[Nearest codebook assignment]
-    G --> H
-    H --> I[Object ID images and metrics]
-```
 
-1. **Learn global object identities.** [GOLD_Code/train_ocl.py](GOLD_Code/train_ocl.py) trains `GOLD_Code.ocl_origin.OCL`. Slots select learnable object prototypes and combine intrinsic identity features with extrinsic features. Frozen DINO ViT-B/8 provides feature-reconstruction targets. In the active branch called `octa`, RGB CNN features supply the attention input. Training includes reconstruction, variational KL terms, and background regularization.
+1. **Learn global object identities.** [GOLD_Code/train_ocl.py](GOLD_Code/train_ocl.py) trains `GOLD_Code.ocl_origin.OCL`. Slots select learnable object prototypes and combine intrinsic identity features with extrinsic features. Frozen DINO ViT-B/8 provides feature-reconstruction targets. With `--data_name octa`, RGB CNN features supply the attention input. Training includes reconstruction, variational KL terms, and background regularization.
 2. **Optimize a Gaussian scene.** The paper trainers freeze GOLD, derive masks and selected codes for each training view, and build a dense identity-feature target. Each Gaussian stores geometry, opacity, RGB spherical harmonics, and a 122-dimensional identity vector. RGB L1/SSIM and feature MSE supervise the scene. `--regloss3d` adds neighborhood identity consistency through KL divergence; densification and pruning remain part of optimization.
 3. **Render and identify objects.** The renderer alpha-blends identity vectors with the same visibility used for RGB. Each pixel is assigned to the nearest global prototype by squared L2 distance, with a zero-vector background entry. Slot order therefore does not define output identity.
 4. **Evaluate saved views.** The evaluator compares rendered ID masks and RGB images with ground truth, writes per-scene scores, and optionally retains the complete scene output.
@@ -51,7 +39,7 @@ The standard paper configuration has 8 slots including background, 11 foreground
 | Implementation | Python scene and renderer | Native rasterizer | Identity width |
 | --- | --- | --- | --- |
 | Our paper method | `core.paper.scene`, `core.paper.gaussian_renderer` | `diff_gaussian_rasterization` | **122** |
-| Original Gaussian Grouping and retained baselines | `core.original.scene_16`, `core.original.gaussian_renderer_16` | `diff_gaussian_rasterization_16` | **16** |
+| Original Gaussian Grouping and baselines | `core.original.scene_16`, `core.original.gaussian_renderer_16` | `diff_gaussian_rasterization_16` | **16** |
 
 The width is fixed in the Gaussian model and CUDA `NUM_OBJECTS` header. `--num_cls 11` controls GOLD prototypes; the original `--num_classes 256` controls a baseline classifier. Neither changes rasterizer width.
 
@@ -71,7 +59,7 @@ SA-OCL/
 ├── evaluation/
 │   ├── original/                    inherited RGB/LERF evaluation
 │   ├── paper/                       object grouping and RGB metrics
-│   ├── notebooks/                   retained ARI analysis notebook
+│   ├── notebooks/                   ARI analysis
 │   └── reports/                     scores and aggregation notebook
 ├── editing/original/                removal and inpainting
 ├── GOLD_Code/                       models, trainers, tests, loaders
@@ -86,7 +74,7 @@ SA-OCL/
 │   ├── original/                    inherited launchers
 │   └── paper/{gold,preprocessing,evaluation}/
 ├── config/gaussian_dataset/train.json
-├── data/                            partial inputs; restore datasets here
+├── data/                            prepared OCTA/GSO datasets
 └── logs/, output/, cache/torch/      runtime destinations
 ```
 
@@ -106,10 +94,11 @@ Shared utilities live under `core/original`; using them does not make the paper 
 
 ## Environment setup
 
+### Main training environment
 
-### Create a main environment on another machine
+Use Linux, an NVIDIA GPU, a compatible driver, and a CUDA toolkit for native compilation. The configuration below uses Python 3.8 and PyTorch 2.1 with CUDA 12.1. PyTorch's [installation guide for previous versions](https://pytorch.org/get-started/previous-versions/) documents this wheel combination.
 
-Use Linux, an NVIDIA GPU, a compatible driver, and a full CUDA toolkit for compilation. This recipe follows the inspected runtime versions; it is a setup reference, not a clean-install-tested lockfile. PyTorch's [previous-version installation guide](https://pytorch.org/get-started/previous-versions/) provides the CUDA 12.1 wheel combination below.
+Commands use **Bash**. If you use another shell, start `bash` before sourcing `scripts/env.sh`, and initialize Conda for that shell.
 
 ```bash
 conda create -n gaussian_grouping python=3.8.20 pip=24.2 -y
@@ -129,9 +118,20 @@ python -m pip install \
 
 cd /path/to/SA-OCL
 source scripts/env.sh
+python -c 'import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())'
 ```
 
-Build the native components in the next section. GOLD and Gaussian optimization use CUDA; CPU-only installation does not run this training pipeline. Gaussian `wandb` logging is optional through `--use_wandb`.
+Activate the environment before sourcing `env.sh`. The helper exposes the project, DEVA, and rasterizer packages on `PYTHONPATH`, sets `TORCH_HOME=cache/torch`, selects the active Conda environment's runtime libraries, and changes to the project root.
+
+Build the native components in the next section, then inspect entrypoint options:
+
+```bash
+bash scripts/run.sh GOLD_Code/train_ocl.py --help
+bash scripts/run.sh training/paper/train_ours.py --help
+bash scripts/run.sh rendering/paper/render_ours.py --help
+```
+
+`run.sh` forwards arguments and runs from the project root. `GAUSSIAN_GROUPING_PYTHON` selects its Python interpreter. GOLD and Gaussian training use CUDA. Gaussian `wandb` logging is optional through `--use_wandb`.
 
 ### SAM2 and optional preprocessing dependencies
 
@@ -146,7 +146,7 @@ python -m pip install --no-build-isolation 'git+https://github.com/facebookresea
 python -m pip install opencv-python Pillow tqdm
 ```
 
-The installed package must provide `configs/sam2.1/sam2.1_hiera_b+.yaml`. The local YAML matches that model; launchers pass the installed package's Hydra configuration name. Return to the main environment before Gaussian training/rendering. SAM2 tracking uses CUDA and BF16 autocasting; select a GPU supporting the required operations.
+The installed package must provide `configs/sam2.1/sam2.1_hiera_b+.yaml`. The YAML in `preprocessing/paper/SAM2/` describes that model; launchers pass the installed package's Hydra configuration name. Return to the main environment before Gaussian training/rendering. SAM2 tracking uses CUDA and BF16 autocasting; select a GPU supporting the required operations.
 
 For optional SAM1 preprocessing, install [Segment Anything](https://github.com/facebookresearch/segment-anything) in its execution environment:
 
@@ -169,7 +169,7 @@ subprocess.check_call([sys.executable, '-m', 'pip', 'install', *dependencies])
 PY
 ```
 
-GroundingDINO-backed DEVA/LERF operations additionally need the [GroundingDINO package and native build](https://github.com/IDEA-Research/GroundingDINO). A retained checkpoint does not install it. The original RGB evaluator imports `lpipsPyTorch`; the paper evaluator uses the separate `lpips` package. Original LaMa inpainting needs its external code/checkpoint paths configured in the editing launcher. These optional components are not required for the GOLD-supervised Gaussian pipeline.
+GroundingDINO-backed DEVA/LERF operations additionally need the [GroundingDINO package and native build](https://github.com/IDEA-Research/GroundingDINO). Install the package as well as placing its checkpoint at the path used by the launcher. The original RGB evaluator imports `lpipsPyTorch`; the paper evaluator uses the separate `lpips` package. Original LaMa inpainting needs its external code/checkpoint paths configured in the editing launcher. These optional components are not required for the GOLD-supervised Gaussian pipeline.
 
 ## Build the CUDA rasterizers
 
@@ -183,9 +183,14 @@ The paper method needs the **122-feature rasterizer and `simple-knn`**. Also bui
 
 Activate the main environment and make a **CUDA 12.1 toolkit with `nvcc`** and a compatible C++ compiler visible. On a cluster, load matching CUDA/compiler modules. PyTorch wheels supply runtime libraries; compilation additionally needs the toolkit. See PyTorch's [CUDA extension implementation](https://raw.githubusercontent.com/pytorch/pytorch/v2.1.0/torch/utils/cpp_extension.py) for discovery/version checks.
 
-Select the target GPU architecture **before building**. Build on the intended GPU node, or set `TORCH_CUDA_ARCH_LIST` explicitly. H100/H200 use compute capability 9.0 according to [NVIDIA's GPU table](https://developer.nvidia.com/cuda/gpus); use `export TORCH_CUDA_ARCH_LIST="9.0"` when targeting them. A binary built only for another architecture may fail on an H200.
+Build on a GPU with the architecture you will use for training, or set `TORCH_CUDA_ARCH_LIST` to the target GPU's compute capability before compilation. To identify the visible GPU's capability:
 
 ```bash
+python -c 'import torch; major, minor = torch.cuda.get_device_capability(); print(f"{major}.{minor}")'
+```
+
+```bash
+conda activate gaussian_grouping
 cd /path/to/SA-OCL
 source scripts/env.sh
 nvcc --version
@@ -193,9 +198,6 @@ gcc --version
 
 # Use the actual toolkit prefix if nvcc is provided through a wrapper.
 export CUDA_HOME="$(dirname "$(dirname "$(command -v nvcc)")")"
-export MAX_JOBS=4
-# When targeting H100/H200, uncomment before building:
-# export TORCH_CUDA_ARCH_LIST="9.0"
 
 # Paper rasterizer: replace the binary inside the source package.
 (
@@ -214,7 +216,7 @@ python -m pip install --no-build-isolation --no-deps ./third_party/cuda/simple-k
 )
 ```
 
-**Why build in place:** `env.sh` puts rasterizer source directories before site-packages. Installing a rebuilt wheel alone can leave the bundled source `_C` binary being imported. An in-place build replaces the binary the launchers load. Bundled binaries target CPython 3.8; rebuild after changing Python, PyTorch, CUDA, or target GPU architecture.
+**Why build in place:** `env.sh` puts rasterizer source directories before site-packages. Installing a rebuilt wheel alone can leave the bundled source `_C` binary being imported. An in-place build replaces the binary the launchers load. Build using the same Python, PyTorch, CUDA, and GPU architecture as your training environment; rebuild when any of these changes.
 
 Check the paper components:
 
@@ -237,26 +239,26 @@ For baselines, also check `import diff_gaussian_rasterization_16._C` and `core.o
 
 ## Models and checkpoints
 
-Foundation assets stay with their consuming components:
+Place foundation-model files with the components that load them:
 
-| Component | Retained location/files |
+| Component | Model location/files |
 | --- | --- |
-| DINO for GOLD | `GOLD_Code/dino/`: `config.json`, `preprocessor_config.json`, `model.safetensors`, `pytorch_model.bin` |
+| DINO ViT-B/8 for GOLD | `GOLD_Code/dino/`: `config.json`, `preprocessor_config.json`, and weights in `model.safetensors` or `pytorch_model.bin` |
 | DEVA | `third_party/deva/saves/DEVA-propagation.pth` |
 | SAM1 / MobileSAM | `third_party/deva/saves/sam_vit_h_4b8939.pth`, `mobile_sam.pt` |
 | GroundingDINO | `third_party/deva/saves/groundingdino_swint_ogc.pth`, `GroundingDINO_SwinT_OGC.py` |
 | SAM2.1 base-plus | `preprocessing/paper/SAM2/weights/sam2.1_hiera_base_plus.pt` |
 
-The paper launchers additionally require these **trained GOLD checkpoints**, currently absent:
+Train GOLD separately for each dataset. The training recipes below save:
 
-| Dataset | Expected checkpoint |
+| Dataset | GOLD state dictionary |
 | --- | --- |
-| GSO | `logs/octa/gso_new/best_model.pt` |
-| OCTA | `logs/octa/gold_origin_ocl_oct_continued/best_model.pt` |
+| OCTA | `logs/octa/octa_gold/best_model.pt` |
+| GSO | `logs/octa/gso_gold/best_model.pt` |
 
-Gaussian trainers/renderers load `best_model.pt` directly as a plain model state dictionary. GOLD's `checkpoint.pt.tar` contains model/optimizer/training state and is not interchangeable. Gaussian resume files `chkpnt<N>.pth`, selected with `--start_checkpoint`, are a third format.
+Set `--checkpoint_path` in both the Gaussian training and rendering commands to the corresponding `best_model.pt`. These are plain model state dictionaries. GOLD's `checkpoint.pt.tar` contains model, optimizer, epoch, and validation state for resuming GOLD. Gaussian optimization uses a separate `chkpnt<N>.pth` format, selected with `--start_checkpoint`.
 
-Use the same GOLD checkpoint and architecture arguments for Gaussian training and rendering. Keep Gaussian `cfg_args` with its point-cloud directory; rendering reloads saved scene settings from it.
+Keep architecture settings identical between GOLD training, Gaussian training, and rendering. Preserve Gaussian `cfg_args` with its point-cloud directory; rendering reloads saved scene settings from it.
 
 ## Data setup
 
@@ -270,8 +272,9 @@ data/OCTScenes_grouped/
 └── 128x128/
     ├── intrinsics.tar
     ├── image/
-    │   ├── 3100/{00.png,01.png,...,59.png}
-    │   └── ... scenes through 3199
+    │   ├── 0000/{00.png,01.png,...,59.png}
+    │   ├── ... training scenes through 3099
+    │   └── 3100/... through 3199/         validation/evaluation scenes
     ├── GT_mask/
     │   └── 3100-3199/{3100_00.png,...,3199_59.png}
     ├── points/{3100_points3D.ply,...,3199_points3D.ply}
@@ -281,20 +284,20 @@ data/OCTScenes_grouped/
     └── SAM2_track_mask/<scene>/<frame>.png
 ```
 
-GOLD also needs training-scene images. The paper's OCTA split is **0–3099 training, 3100–3199 held out**; see the GOLD section because the active trainer does not implement it as-is.
+Prepare images for **0–3099 training scenes and 3100–3199 validation/evaluation scenes**, and configure the GOLD split as described in [Train GOLD](#train-gold). Download the source data from [OCTScenes on Hugging Face](https://huggingface.co/datasets/Yinxuan/OCTScenes); the dataset is described in [OCTScenes, arXiv:2306.09682](https://arxiv.org/abs/2306.09682). Arrange the selected scenes and camera inputs in the layout above.
 
 Camera archives are opened directly by the OCTA reader:
 
-- `128x128/intrinsics.tar` members must be `bbox/<scene:04d>/<scene:04d>_<frame>.txt`, holding **3 × 3 intrinsic matrices**. The `bbox/` prefix is historical.
+- `128x128/intrinsics.tar` members must be `bbox/<scene:04d>/<scene:04d>_<frame>.txt`, holding **3 × 3 intrinsic matrices**. The reader expects the `bbox/` member prefix.
 - `poses.tar` members must be `pose/<scene:04d>_<frame>.txt`, holding camera transforms in the convention expected by the reader.
 - Images use two-digit frames, e.g. `3100/00.png`; GT uses `3100_00.png` inside the fixed `3100-3199` folder.
 - Initial points use `<scene>_points3D.ply`; the loader can fall back to same-prefix COLMAP `.bin` or `.txt` files.
 
-The retained root `bbox.tar` contains bounding-box annotations and **does not replace the camera-intrinsics archive**. Root `intrinsic.txt` also does not satisfy the OCTA reader's archive path. Keep camera archives in archive form; inspect members with `tar -tf` before use.
+Use calibrated intrinsic matrices for `intrinsics.tar`; bounding-box annotations are a separate input. Keep camera archives in archive form for the readers and inspect their member names with `tar -tf`.
 
 ### GSO
 
-Launchers require `data/GSO_new`; this snapshot only retains an empty `data/GSO` directory.
+Arrange generated GSO data under `data/GSO_new`, or set dataset arguments to the root you use:
 
 ```text
 data/GSO_new/
@@ -310,7 +313,9 @@ data/GSO_new/
     └── SAM2_track_mask/<scene>/<frame>.png
 ```
 
-The active GOLD branch needs GSO images for **0–1899 training** and **1900–1999 validation**, plus validation GT. GSO GT is flat under `GT_mask/`, unlike OCTA. The GSO reader applies its own camera-coordinate conversion; preserve its pose convention rather than copying an OCTA conversion.
+Prepare GSO images for **0–1899 training** and **1900–1999 validation/evaluation**, plus validation GT. GSO GT is flat under `GT_mask/`, unlike OCTA. The GSO reader applies its own camera-coordinate conversion; export poses in the convention expected by that reader.
+
+Generate synthetic scenes with [Kubric](https://github.com/google-research/kubric), following its installation and rendering instructions. Export RGB images, integer instance masks, camera calibration, and camera poses into the layout above.
 
 ### Ground truth, pseudo-masks, and splits
 
@@ -325,11 +330,11 @@ Original/baseline readers select pseudo-masks as follows:
 | `--uniflift --sam2` | `SAM2_mask_Uni` |
 | `--sam2` | `SAM2_track_mask` |
 
-`--uniflift` is the actual spelling. Paper commands use `--ours` and GOLD; they do not require these pseudo-mask folders. Historical non-`--ours` paper-reader branches have different mask paths; use original 16-feature entrypoints for the documented baselines.
+`--uniflift` is the actual spelling. Paper commands use `--ours` and GOLD; they do not require these pseudo-mask folders. Use the original 16-feature entrypoints for these baselines.
 
 `--eval --train_split` with default `--split_factor 0.8` chooses 48 training and 12 held-out views from a 60-view scene. This **within-scene split** differs from GOLD's **across-scene split**. Entrypoints seed the selection deterministically; preserve `cfg_args`, image names, and data when rendering later.
 
-Retained OCTA assets include poses, bounding boxes, baseline masks, and point clouds for 3100–3199. RGB, GT, and `128x128/intrinsics.tar` are absent. Restore original assets into real directories or update explicit paths; there is no complete dataset-download/bootstrap script.
+Set dataset paths consistently across preprocessing, GOLD, Gaussian training, and rendering. Resize RGB and label masks to the selected resolution while preserving integer labels; camera calibration must correspond to that image resolution.
 
 ## Preprocessing
 
@@ -379,22 +384,88 @@ bash scripts/run.sh preprocessing/paper/SAM2/sam2_mask.py \
     --cfg configs/sam2.1/sam2.1_hiera_b+.yaml
 ```
 
-Uppercase local `SAM2/` is distinct from installed lowercase `sam2`. [scripts/paper/preprocessing](scripts/paper/preprocessing/) contains SLURM versions.
+The project directory `SAM2/` is distinct from the installed lowercase `sam2` package. [scripts/paper/preprocessing](scripts/paper/preprocessing/) contains SLURM versions.
 
-DEVA launchers [GSO_pesudo_label.sh](scripts/paper/preprocessing/GSO_pesudo_label.sh) and [OCTScence_pesudo_label.sh](scripts/paper/preprocessing/OCTScence_pesudo_label.sh) are historical templates. Inspect input archives, `OCT_ROOT`, `OUT_ROOT`, and output placement: GSO currently reads `data/GSO_new` but writes under root `GSO/`; OCTA reads root `GSO/` compressed archives while writing OCTA masks. Align paths with the reader's `data/<dataset>/128x128/DEVA_mask/<scene>/`. These jobs do not prepare GT/camera inputs for the paper method.
+For DEVA masks, configure [GSO_pesudo_label.sh](scripts/paper/preprocessing/GSO_pesudo_label.sh) or [OCTScence_pesudo_label.sh](scripts/paper/preprocessing/OCTScence_pesudo_label.sh): set `OCT_ROOT` to the chosen dataset root, archive paths to your packaged inputs, and `OUT_ROOT` to `<dataset_root>/128x128/DEVA_mask`. Save each scene's masks under `<scene>/<frame>.png` so the baseline reader finds them. Prepare GT labels and camera inputs separately.
 
 ## Train GOLD
 
-### GSO: active recipe
+GOLD follows [Learning global object-centric representations via disentangled slot attention](https://link.springer.com/article/10.1007/s10994-024-06687-9), whose [official implementation](https://github.com/Tonglin-Chen/GOLD) provides the base object-centric model. The paper Gaussian pipeline uses `GOLD_Code.ocl_origin.OCL` through [GOLD_Code/train_ocl.py](GOLD_Code/train_ocl.py).
 
-[scripts/paper/gold/train_gso.sh](scripts/paper/gold/train_gso.sh) trains `ocl_origin.OCL`. Despite `--data_name octa`, this branch is configured for **GSO 0–1899**, validation **1900–1999**, and GT at `data/GSO_new/128x128/GT_mask`. Here `octa` is a historical branch/log name; changing it to `gso` does not preserve the behavior.
+### Configure the dataset split
 
-After restoring all GSO training/validation inputs, run on a GPU in the main environment:
+In the `if args.data_name == 'octa':` dataset-loading block of `GOLD_Code/train_ocl.py`, set the two `OCTScenesDataset` constructors for the dataset you are training. Scene bounds are inclusive:
+
+| Setting | OCTA | GSO |
+| --- | --- | --- |
+| Training `scene_min` / `scene_max` | `0` / `3099` | `0` / `1899` |
+| Training `mask_root` | `None` | `None` |
+| Validation `scene_min` / `scene_max` | `3100` / `3199` | `1900` / `1999` |
+| Validation `mask_root` | `data/OCTScenes_grouped/128x128/GT_mask/3100-3199` | `data/GSO_new/128x128/GT_mask` |
+| `--data_path` | `data/OCTScenes_grouped/128x128/image` | `data/GSO_new/128x128/image` |
+
+Use `--data_name octa` for both recipes: it selects the model's RGB-CNN attention branch and names the log group. The selected dataset comes from the image root, scene bounds, and validation mask root. Set these constructor fields in the trainer before switching datasets.
+
+### OCTA training
+
+1. Place scene images under `image/<scene>/<frame>.png` for scenes 0–3199, and validation masks under `GT_mask/3100-3199/<scene>_<frame>.png`.
+2. Set the training and validation constructors below inside the `if args.data_name == 'octa':` block, preserving that block's indentation:
+
+```python
+train_dataset = OCTScenesDataset(
+    images_root=args.data_path,
+    scene_min=0,
+    scene_max=3099,
+    mask_root=None,
+    image_transform=transforms.ToTensor(),
+)
+val_dataset = OCTScenesDataset(
+    images_root=args.data_path,
+    scene_min=3100,
+    scene_max=3199,
+    mask_root="data/OCTScenes_grouped/128x128/GT_mask/3100-3199",
+    image_transform=transforms.ToTensor(),
+    mask_transform=transforms.Compose([
+        transforms.PILToTensor(),
+        transforms.Lambda(lambda x: x.long()),
+    ]),
+)
+```
+
+3. Activate the main environment and launch 30 epochs of fresh training:
 
 ```bash
+conda activate gaussian_grouping
+cd /path/to/SA-OCL
 source scripts/env.sh
-torchrun --standalone --nproc_per_node 1 --master_port 20510 GOLD_Code/train_ocl.py \
-    --data_name octa --data_path data/GSO_new/128x128/image --model_name gso_new \
+
+torchrun --standalone --nproc_per_node 1 GOLD_Code/train_ocl.py \
+    --data_name octa --data_path data/OCTScenes_grouped/128x128/image \
+    --model_name octa_gold --checkpoint_path "" \
+    --batch_size 8 --num_slots 8 --slot_size 128 --int_size 122 --ext_size 6 --bck_size 8 \
+    --seed 3496339326 --epochs 30 --num_cls 11 \
+    --reg_start 0.1 --reg_final 0.1 --reg_steps 697500 \
+    --kld_start 1 --kld_final 1 --kld_start_steps 0 --kld_final_steps 80000 \
+    --tau_start 1.0 --tau_final 0.1 --tau_start_steps 100000 --tau_final_steps 300000 \
+    --beta 100 --num_iterations 2
+```
+
+The trained state dictionary is `logs/octa/octa_gold/best_model.pt`. Set the OCTA Gaussian trainer and renderer's `--checkpoint_path` to this file.
+
+To use [scripts/paper/gold/train_oct.sh](scripts/paper/gold/train_oct.sh), configure the same dataset block, set the launcher's `--data_path` to your OCTA image root and `--model_name` to your run name, and use `--checkpoint_path ""` for fresh training. For continued training, set that argument to the GOLD resume archive and choose the target total epoch count.
+
+### GSO training
+
+Set the dataset constructors to the GSO bounds and validation-mask root in the table, then run:
+
+```bash
+conda activate gaussian_grouping
+cd /path/to/SA-OCL
+source scripts/env.sh
+
+torchrun --standalone --nproc_per_node 1 GOLD_Code/train_ocl.py \
+    --data_name octa --data_path data/GSO_new/128x128/image \
+    --model_name gso_gold --checkpoint_path "" \
     --batch_size 8 --num_slots 8 --slot_size 128 --int_size 122 --ext_size 6 --bck_size 8 \
     --seed 3496339326 --epochs 40 --num_cls 11 \
     --reg_start 0.1 --reg_final 0.1 --reg_steps 570000 \
@@ -403,75 +474,78 @@ torchrun --standalone --nproc_per_node 1 --master_port 20510 GOLD_Code/train_ocl
     --beta 100 --num_iterations 2
 ```
 
-Use **`torchrun` even on one GPU**: the trainer initializes NCCL and distributed training. Ordinary `python ...` does not establish that environment. Keep architecture arguments explicit, particularly `--int_size 122`; some parser defaults use a different width.
+This saves `logs/octa/gso_gold/best_model.pt`. For [scripts/paper/gold/train_gso.sh](scripts/paper/gold/train_gso.sh), set the same image root, model name, architecture arguments, and fresh/resume checkpoint choice.
 
-Existing SLURM launcher:
+### Checkpoints and resuming
 
-```bash
-mkdir -p logs/slurm
-sbatch scripts/paper/gold/train_gso.sh
-```
+Use **`torchrun` even for one GPU**, because the trainer initializes NCCL and distributed training. Keep the model dimensions explicit: `--num_slots 8 --slot_size 128 --int_size 122 --ext_size 6 --bck_size 8 --num_cls 11 --num_iterations 2`.
 
-It requests one GPU, six CPUs, 256 GB RAM, and 70 hours. Adjust site-specific SLURM/environment settings. Submit from the project root so relative log paths resolve before execution.
-
-Outputs go to `logs/<data_name>/<model_name>/`, here `logs/octa/gso_new/`:
+Outputs go to `logs/<data_name>/<model_name>/`:
 
 | File | Purpose |
 | --- | --- |
 | `best_model.pt` | Validation-best plain state dictionary for Gaussian training/rendering |
-| `best_model_until_<steps>_steps.pt` | Selected plain state dictionary within a step budget |
+| `best_model_until_<steps>_steps.pt` | Selected plain state dictionary within the `--steps` budget |
 | `checkpoint.pt.tar` | Model, optimizer, epoch, and validation state for GOLD resume |
 
-To resume, repeat architecture/training arguments and add `--checkpoint_path logs/octa/gso_new/checkpoint.pt.tar`. The trainer resumes only when the file exists; a missing path starts from scratch. Check the resume file before relying on that option.
+For fresh training, `--checkpoint_path ""` explicitly disables loading a resume file. To resume OCTA, repeat its training command with `--checkpoint_path logs/octa/octa_gold/checkpoint.pt.tar`; for GSO, use its corresponding archive. `--epochs` is the target total epoch count, not an additional number of epochs. Preserve the architecture settings and use the validation-best `best_model.pt` for the Gaussian pipeline.
 
-### OCTA: current limitation
+For scheduler submission, configure the launcher environment initialization for your installation and submit from the project root:
 
-[scripts/paper/gold/train_oct.sh](scripts/paper/gold/train_oct.sh) is a historical continuation launcher: 30 epochs, `model_name=gold_origin_ocl_oct_continued`, and a prior resume archive. **It calls the GSO-configured `train_ocl.py` branch**, so its OCTA image path alone does not implement the paper's OCTA split/GT locations. It is not a ready fresh OCTA recipe.
-
-For OCTA Gaussian scenes, restore a compatible trained `ocl_origin.OCL` checkpoint at `logs/octa/gold_origin_ocl_oct_continued/best_model.pt`, or point training and rendering to its actual location. New OCTA GOLD training requires an explicit correction to the active trainer's split and validation-GT configuration. Those data-selection changes were left unchanged in this documentation task.
-
-`train_ocl_nobg.py` uses alternate `ocl.OCL` and includes 0–3199 in its `octa` training selection, overlapping validation 3100–3199. It is not a drop-in replacement. The Replica launcher is another experiment with different architecture settings.
+```bash
+mkdir -p logs/slurm
+sbatch scripts/paper/gold/train_oct.sh
+# Or submit the GSO launcher:
+sbatch scripts/paper/gold/train_gso.sh
+```
 
 ## Run the combined training and evaluation jobs
 
-Paper metric launchers execute **Gaussian training → rendering → evaluation** per scene. Steps are sequential inside an array task; tasks can run in parallel. They consume an already-trained frozen GOLD checkpoint.
+The metric launchers execute **Gaussian training → rendering → evaluation** per scene, consuming the frozen GOLD checkpoint trained above. Steps run sequentially inside each array task; tasks can run in parallel.
 
-| Launcher | Current scene allocation | GOLD checkpoint | Model retention |
+| Dataset | Launcher | Dataset root | GOLD checkpoint to configure |
 | --- | --- | --- | --- |
-| [run_metric_ours_gso.sh](scripts/paper/evaluation/run_metric_ours_gso.sh) | Array 0–9; 10 scenes/task; **1900–1999** | `logs/octa/gso_new/best_model.pt` | Task 5 keeps **1950–1959**; other tasks delete scene outputs |
-| [run_metric_ours_oct.sh](scripts/paper/evaluation/run_metric_ours_oct.sh) | Array 0–9; 1 scene/task; **3150–3159** | `logs/octa/gold_origin_ocl_oct_continued/best_model.pt` | All ten kept; both branches pass `--save` |
+| OCTA | [run_metric_ours_oct.sh](scripts/paper/evaluation/run_metric_ours_oct.sh) | `data/OCTScenes_grouped` | `logs/octa/octa_gold/best_model.pt` |
+| GSO | [run_metric_ours_gso.sh](scripts/paper/evaluation/run_metric_ours_gso.sh) | `data/GSO_new` | `logs/octa/gso_gold/best_model.pt` |
 
-**`metric.py` deletes the entire `--model_path` directory after successful evaluation unless `--save` is passed.** Reports are outside that directory and remain.
+Before launching:
 
-Before submission, restore images/cameras/points/GT, check the GOLD file, and verify native imports. These shell launchers do not stop automatically at every failed subprocess; a missing prerequisite can cause subsequent failures. Run a single scene first using the next section.
+1. Set dataset roots, scene-output paths, and both training/rendering `--checkpoint_path` arguments to your prepared data and GOLD checkpoint.
+2. Set `START_SCENE`, `SCENES_PER_JOB`, and the array range to cover your evaluation scenes. For OCTA scenes 3100–3199, use `START_SCENE=3100`, `SCENES_PER_JOB=10`, and array `0-9`. For GSO, start at 1900 and select the scene set for your experiment. Each task processes `START_SCENE + task_id * SCENES_PER_JOB` through that value plus `SCENES_PER_JOB - 1`.
+3. Set the Gaussian training budget explicitly. Use `--iterations 300000` for the paper's budget, and keep `--ours --train_split --eval --regloss3d`, the dataset flag (`--OCT` or `--GSO`), and the 122/6/128 model dimensions consistent.
+4. Set a report basename for the run, e.g. `evaluation/reports/COLMAP/OCTA/ours/run_01`, and configure `--save` in every metric call whose scene outputs you want to keep.
+5. Configure environment activation for your installation, then test one scene with the manual command below.
+
+**Without `--save`, `metric.py` deletes the complete `--model_path` directory after evaluation.** Reports remain at the separate `--output` location. Apply the retention choice to each branch of an array launcher.
+
+Submit the configured launchers from the project root:
 
 ```bash
-cd /scratch/work/hsut2/SA-OCL
+cd /path/to/SA-OCL
 mkdir -p logs logs/slurm
-sbatch scripts/paper/evaluation/run_metric_ours_gso.sh
-
-# After supplying OCTA data and its compatible GOLD checkpoint:
 sbatch scripts/paper/evaluation/run_metric_ours_oct.sh
+# Or run the GSO scene set:
+sbatch scripts/paper/evaluation/run_metric_ours_gso.sh
 ```
 
-Metric jobs activate `gaussian_grouping`, load `triton/2025.1-gcc`, `cuda`, and `gcc`, and request one GPU, six CPUs, 256 GB RAM, and partition `gpu-h200-141g-short`. GSO requests six hours/task; OCTA 1 hour 20 minutes. Match headers, modules, and environment lines to your cluster and compiled binaries.
-
-For all OCTA scenes **3100–3199**, change the launcher's experiment settings to `START_SCENE=3100`, `SCENES_PER_JOB=10`, array `0-9`, and a suitable time limit. The saved launcher covers ten scenes. To retain every GSO model, pass `--save` in both evaluation branches. These are next-run configuration choices, not edits already made here.
+For execution without a scheduler, use the manual pipeline below.
 
 ## Run one scene manually
 
 This GSO example **keeps its output**. Run in the main environment on a GPU with complete GSO inputs and the trained checkpoint:
 
 ```bash
+conda activate gaussian_grouping
+cd /path/to/SA-OCL
 source scripts/env.sh
 SAOCL_SCENE=1900
-SAOCL_GOLD=logs/octa/gso_new/best_model.pt
+SAOCL_GOLD=logs/octa/gso_gold/best_model.pt
 SAOCL_OUTPUT=output/COLMAP/GSO_new/${SAOCL_SCENE}_ours
 
 python training/paper/train_GSO.py \
     -s data/GSO_new -m "${SAOCL_OUTPUT}" \
     --config_file config/gaussian_dataset/train.json \
-    --size 128 --scene_id "${SAOCL_SCENE}" \
+    --size 128 --scene_id "${SAOCL_SCENE}" --iterations 300000 \
     --GSO --ours --train_split --eval --regloss3d \
     --num_slots 8 --slot_size 128 --int_size 122 --ext_size 6 --bck_size 8 --num_cls 11 \
     --checkpoint_path "${SAOCL_GOLD}" && \
@@ -493,11 +567,11 @@ python evaluation/paper/metric.py \
 | `rendering/paper/render_ours_GSO.py` | `rendering/paper/render_ours.py` |
 | `-s data/GSO_new`, `--GSO` | `-s data/OCTScenes_grouped`, `--OCT` |
 | Scene 1900 | Available held-out scene, e.g. 3100 |
-| `logs/octa/gso_new/best_model.pt` | `logs/octa/gold_origin_ocl_oct_continued/best_model.pt` |
+| `logs/octa/gso_gold/best_model.pt` | `logs/octa/octa_gold/best_model.pt` |
 | `output/COLMAP/GSO_new/...` | `output/COLMAP/OCTA/...` |
 | GSO report base | Distinct base under `evaluation/reports/COLMAP/OCTA/ours/` |
 
-The default is **30,000 Gaussian iterations**. Pass `--iterations <N>` to choose another budget; the final iteration is added to the save list. Rendering loads the latest saved point cloud, or `--iteration <N>` selects one. `--checkpoint_iterations <N> ...` saves resumable Gaussian archives; `--start_checkpoint <path>` resumes them.
+The example sets **300,000 Gaussian iterations** to match the paper's budget. Set `--iterations <N>` explicitly for each experiment; omitting it uses the trainer default of 30,000. The final iteration is added to the save list. Rendering loads the latest saved point cloud, or `--iteration <N>` selects one. `--checkpoint_iterations <N> ...` saves resumable Gaussian archives; `--start_checkpoint <path>` resumes them.
 
 ## Outputs and metrics
 
@@ -506,13 +580,13 @@ output/COLMAP/<dataset>/<scene>_ours/
 ├── cfg_args
 ├── input.ply
 ├── cameras.json
-├── point_cloud/iteration_30000/point_cloud.ply
+├── point_cloud/iteration_300000/point_cloud.ply
 ├── train/
 │   ├── renders/                 rendered RGB
 │   ├── gt/                      GT RGB
 │   ├── objects_pred/            integer predicted IDs
 │   ├── objects_rgb_pred/        colored ID visualization
-│   ├── objects_feature16/       PCA visualization; historical name
+│   ├── objects_feature16/       PCA feature visualization
 │   ├── gt_ocl_mask/             integer GT IDs
 │   ├── gt_objects_color/        GT visualization
 │   ├── concat/                  comparison images
@@ -520,7 +594,7 @@ output/COLMAP/<dataset>/<scene>_ours/
 └── test/                        same groups for held-out views
 ```
 
-`objects_feature16` keeps its historical name with **122-feature paper models**. Evaluate `objects_pred`, not PCA/color images. Render names such as `00000.png` index the camera sequence, not necessarily original frame IDs.
+`objects_feature16` contains PCA visualizations of the paper model's **122-dimensional features**. Use the integer ID images in `objects_pred` for segmentation evaluation. Render names such as `00000.png` index the rendered camera sequence; match each result to its exported GT image when scoring.
 
 Evaluation always scores train views; `--test` also scores held-out views. `--ours` includes renderer FPS. Frame scores are averaged within each scene:
 
@@ -537,38 +611,34 @@ ARI, AMI, and matched IoU allow label permutations within a scene. They alone do
 
 `--output` is a **report basename**: `.../manual` produces `manual_train.txt` and, with `--test`, `manual_test.txt`. Reports append scene rows; use a new basename per run to avoid mixed/duplicate results. Array tasks share report files without explicit locking, so check coverage and duplicate rows before aggregation.
 
-Current batch reports:
+For example, configure OCTA's report base as `evaluation/reports/COLMAP/OCTA/ours/run_01` and GSO's as `evaluation/reports/COLMAP/GSO_new/ours/run_01`. The evaluator creates the corresponding `_train.txt` and `_test.txt` files.
 
-- GSO: `evaluation/reports/COLMAP/GSO_new/ours/ours_new_h200_train.txt` and `ours_new_h200_test.txt`.
-- OCTA: `evaluation/reports/COLMAP/OCTA/ours/ours_extend_h200__train.txt` and `ours_extend_h200__test.txt`. The double underscore comes from the launcher's trailing underscore.
-
-Logs follow `#SBATCH --output`. [evaluation/reports/get_scores.ipynb](evaluation/reports/get_scores.ipynb) aggregates score text; run with working directory `evaluation/reports/` and select the intended files. Historical reports may reflect other settings/subsets and should not be merged automatically with a new run.
+Logs follow each launcher's `#SBATCH --output` path. [evaluation/reports/get_scores.ipynb](evaluation/reports/get_scores.ipynb) aggregates score text; run it with working directory `evaluation/reports/`, select the report paths for your run, and combine only results using the same experiment settings.
 
 ## Baselines and other components
 
-These launchers also train, render, and evaluate per scene. They use the **16-feature core**, baseline classifiers, and pseudo-masks rather than GOLD:
+These launchers also train, render, and evaluate per scene. They use the **16-feature core**, baseline classifiers, and prepared pseudo-masks:
 
-| Launcher | Method / masks | Current ranges |
+| Launcher | Method / masks | Datasets |
 | --- | --- | --- |
-| [run_metric_gg.sh](scripts/paper/evaluation/run_metric_gg.sh) | Gaussian Grouping / DEVA | GSO 1900–1999 |
-| [run_metric_gg_sam2.sh](scripts/paper/evaluation/run_metric_gg_sam2.sh) | Gaussian Grouping / SAM2 tracking | OCTA 3100–3199, GSO 1900–1999 |
-| [run_metric_uni_sam.sh](scripts/paper/evaluation/run_metric_uni_sam.sh) | Unified Lift / SAM1 | OCTA 3100–3199, GSO 1900–1999 |
-| [run_metric_uni_sam2.sh](scripts/paper/evaluation/run_metric_uni_sam2.sh) | Unified Lift / independent SAM2 | OCTA 3100–3199, GSO 1900–1999 |
+| [run_metric_gg.sh](scripts/paper/evaluation/run_metric_gg.sh) | Gaussian Grouping / DEVA | GSO |
+| [run_metric_gg_sam2.sh](scripts/paper/evaluation/run_metric_gg_sam2.sh) | Gaussian Grouping / SAM2 tracking | OCTA, GSO |
+| [run_metric_uni_sam.sh](scripts/paper/evaluation/run_metric_uni_sam.sh) | Unified Lift / SAM1 | OCTA, GSO |
+| [run_metric_uni_sam2.sh](scripts/paper/evaluation/run_metric_uni_sam2.sh) | Unified Lift / independent SAM2 | OCTA, GSO |
 
-These normally keep array task 0's scenes and delete other model directories after scoring. Inspect `--save` branches and dataset roots. Inherited `scripts/original/` launchers cover original training, pseudo-labels, and editing; notes remain in [docs/original/docs](docs/original/docs/).
+Configure dataset paths, evaluation scenes, output/report locations, and `--save` for these jobs in the same way as the paper launchers. Build the 16-feature rasterizer, prepare the mask folders from [Data setup](#data-setup), and keep baseline classifier settings consistent between training and rendering. [scripts/original](scripts/original/) contains inherited training, preprocessing, and editing launchers.
 
 Additional components:
 
-- [GOLD_Code/train_vqvae.py](GOLD_Code/train_vqvae.py), [test_gold.py](GOLD_Code/test_gold.py), and `vqvae/` implement auxiliary image reconstruction, not required by the paper Gaussian pipeline.
-- [GOLD_Code/test_ocl.py](GOLD_Code/test_ocl.py) uses alternate `ocl.OCL` and separate data/checkpoint assumptions. Check compatibility before using an `ocl_origin.OCL` checkpoint there.
-- [editing/original](editing/original/) contains removal and LaMa-assisted inpainting; configure the external inpainting model separately.
-- Original LERF rendering needs text/grounded segmentation dependencies, including GroundingDINO, and its own datasets.
-- [evaluation/notebooks/ARI_test.ipynb](evaluation/notebooks/ARI_test.ipynb) references external `testing_models.contrasa_base` and absent data/checkpoints; it is retained analysis, not a standalone pipeline.
-- ObjectGS/uOCF historical scores may be present; their standalone training repositories are not included.
+- [GOLD_Code/train_vqvae.py](GOLD_Code/train_vqvae.py), [test_gold.py](GOLD_Code/test_gold.py), and `vqvae/` implement auxiliary image reconstruction. The paper Gaussian pipeline uses the trained object-centric backbone directly.
+- [GOLD_Code/train_ocl_nobg.py](GOLD_Code/train_ocl_nobg.py) and [test_ocl.py](GOLD_Code/test_ocl.py) use the alternative `ocl.OCL` model. Set their dataset splits and checkpoint architecture for that model when running those experiments.
+- [editing/original](editing/original/) contains object removal and LaMa-assisted inpainting. Configure input/output paths, object selection, and external inpainting model paths in the editing launchers.
+- Original LERF rendering requires text/grounded segmentation dependencies, including GroundingDINO, and its dataset inputs.
+- [evaluation/notebooks/ARI_test.ipynb](evaluation/notebooks/ARI_test.ipynb) supports additional analysis. Configure dataset/checkpoint paths and install its referenced `testing_models.contrasa_base` implementation before using it.
 
-## Experiment settings and paper differences
+## Experiment configuration
 
-[config/gaussian_dataset/train.json](config/gaussian_dataset/train.json) is loaded after Gaussian argument parsing and overrides corresponding settings:
+[config/gaussian_dataset/train.json](config/gaussian_dataset/train.json) is loaded after Gaussian argument parsing and overrides the corresponding settings:
 
 | Setting | Value |
 | --- | --- |
@@ -580,43 +650,33 @@ Additional components:
 | `reg3d_max_points` | 200,000 |
 | `reg3d_sample_size` | 1,000 |
 
-`--regloss3d` enables the neighborhood term. Standard examples use feature MSE; `--masked_pixel_loss` selects an experimental alternative.
+Set dataset splits using the GOLD table, the scene range using the metric launcher, and Gaussian iterations using `--iterations`. Keep the 122-dimensional intrinsic code, 6-dimensional extrinsic code, and 128-dimensional full slot consistent across stages.
 
-| Topic | Paper / intended experiment | Current snapshot |
-| --- | --- | --- |
-| Gaussian budget | 300,000 iterations/scene | Default 30,000; batch launchers do not override it |
-| OCTA GOLD split | Train 0–3099; hold out 3100–3199 | Active branch uses GSO 0–1899/1900–1999 and GSO GT |
-| OCTA Gaussian coverage | 100 held-out scenes | Paper launcher runs 3150–3159 |
-| GSO coverage | Paper describes 90 test scenes | Launcher covers all 100 IDs 1900–1999 |
-| Intrinsic width | 122 | Some defaults are 58; launchers pass 122 explicitly |
-| Feature targets | Mask-weighted codes | Trainer additionally sharpens resized masks |
-| Neighborhood probabilities | Global-codebook formulation | Trainer uses selected per-view codes plus background; helper divides KL by probability width |
-
-These choices were preserved. Historical reports are not certified reproductions of the paper tables. [docs/paper-guide.md](docs/paper-guide.md) provides equation-to-code analysis. Supporting historical documents may describe older layouts; this README gives current paths and asset status.
+`--regloss3d` enables neighborhood consistency. The standard trainer uses feature MSE and sharpens resized GOLD masks before constructing feature targets. Its neighborhood term compares distributions over the selected per-view codes plus background, and the helper scales KL by the probability-vector width. `--masked_pixel_loss` selects an alternative feature loss. Record these flags, the configuration file, scene list, and checkpoint with each experiment.
 
 ## Troubleshooting
 
 | Symptom | Check |
 | --- | --- |
-| Missing `core` / `GOLD_Code` import | Activate environment and source `scripts/env.sh` in Bash, or use `scripts/run.sh` |
-| Rasterizer `_C` fails / undefined symbols | Match Python/PyTorch/CUDA ABI; rebuild correct variant **in place** and inspect loaded path |
-| `GLIBCXX_3.4.32 not found` | Activate main Conda environment before helper; elsewhere use C++ runtime matching the extension compiler |
-| Missing `nvcc` / CUDA mismatch | Expose full toolkit; check `CUDA_HOME`, `nvcc --version`, and `torch.version.cuda` |
-| No kernel image for GPU | Rebuild for the job GPU's architecture |
-| GOLD checkpoint/feature shape mismatch | Match `ocl_origin.OCL`, prototype count, slots, 122/6/128 dimensions; use plain `best_model.pt` |
-| Missing distributed `RANK` | Use `torchrun` for GOLD, even on one GPU |
-| Empty GOLD loader / wrong validation paths | Check numeric scene folders and hard-coded split; active `octa` branch uses GSO validation GT |
-| Missing OCTA camera/GT inputs | Restore `128x128/intrinsics.tar` and `GT_mask/3100-3199`; `bbox.tar` is not a camera archive |
-| Missing GSO | Launchers need `data/GSO_new`; empty `data/GSO` is insufficient |
-| Model disappears after scoring | Pass metric `--save`; inspect batch retention branches |
-| SAM2 Hydra config missing | Use SAM2 environment and package providing the SAM2.1 config |
-| Missing GroundingDINO / `lpipsPyTorch` / notebook module | Install/configure the relevant optional component |
-| SLURM cannot open log | Submit from project root; create log directory before `sbatch` |
+| Missing `core` / `GOLD_Code` import | Activate the environment and source `scripts/env.sh` in Bash, or use `scripts/run.sh` |
+| Rasterizer `_C` fails / undefined symbols | Match Python/PyTorch/CUDA ABI; rebuild the correct variant in place and inspect the loaded path |
+| C++ runtime `GLIBCXX` error | Use a C++ runtime compatible with the compiler that built the extension; activate the environment before sourcing the helper |
+| Missing `nvcc` / CUDA mismatch | Check the full toolkit, `CUDA_HOME`, `nvcc --version`, and `torch.version.cuda` |
+| No kernel image for GPU | Rebuild for the GPU architecture used by training |
+| GOLD checkpoint/feature shape mismatch | Match `ocl_origin.OCL`, prototype count, slots, and 122/6/128 dimensions; use plain `best_model.pt` for Gaussian stages |
+| Missing distributed `RANK` | Use `torchrun` for GOLD, including single-GPU training |
+| Empty GOLD loader / missing validation masks | Check image folders, inclusive scene bounds, and the dataset-specific `mask_root` in the trainer |
+| Camera or image file not found | Match the dataset-root layout, archive member names, scene IDs, and frame filenames |
+| Model disappears after scoring | Set metric `--save` in every applicable launcher branch |
+| SAM2 Hydra config missing | Use the SAM2 environment and a package providing the SAM2.1 configuration |
+| Missing GroundingDINO / `lpipsPyTorch` / notebook module | Install and configure the dependency required by that entrypoint |
+| Scheduler cannot open a log file | Submit from the project root and create the configured log directory before submission |
 
-## References and provenance
+## References
 
 - Paper: [Scene-Agnostic Object-Centric Representation Learning for 3D Gaussian Splatting, arXiv:2604.09045v1](https://arxiv.org/abs/2604.09045v1).
-- Inherited base: [Gaussian Grouping](https://github.com/lkeab/gaussian-grouping), with pre-existing local changes preserved.
-- Root [LICENSE](LICENSE) and retained component licenses apply to their respective code; consult upstream package/model terms when obtaining assets.
-
-
+- GOLD: [Learning global object-centric representations via disentangled slot attention](https://link.springer.com/article/10.1007/s10994-024-06687-9) and [official implementation](https://github.com/Tonglin-Chen/GOLD).
+- Dataset: [OCTScenes](https://huggingface.co/datasets/Yinxuan/OCTScenes) and [dataset paper](https://arxiv.org/abs/2306.09682).
+- Synthetic data generation: [Kubric](https://github.com/google-research/kubric).
+- Inherited Gaussian core: [Gaussian Grouping](https://github.com/lkeab/gaussian-grouping).
+- Root [LICENSE](LICENSE) and component licenses apply to their respective code; consult upstream package/model terms when obtaining assets.
